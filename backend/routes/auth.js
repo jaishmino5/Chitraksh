@@ -162,4 +162,101 @@ router.get('/me', protect, async (req, res) => {
   }
 });
 
+// @desc    Authenticate with Google (Real Google Sign-In & Mock sandbox fallback)
+// @route   POST /api/auth/google
+// @access  Public
+router.post('/google', async (req, res) => {
+  try {
+    const { token, isMock, payload } = req.body;
+
+    if (!token) {
+      return res.status(400).json({ success: false, message: 'Google credential token is required' });
+    }
+
+    let email, name;
+
+    if (isMock) {
+      // Sandbox Mock Login fallback
+      const mockPayload = payload || {};
+      email = (mockPayload.email || 'sandbox.google.user@example.com').toLowerCase().trim();
+      name = mockPayload.name || 'Google Sandbox User';
+    } else {
+      // Real Google ID Token verification
+      const decoded = jwt.decode(token);
+      if (!decoded) {
+        return res.status(400).json({ success: false, message: 'Invalid Google credential token format' });
+      }
+
+      email = (decoded.email || '').toLowerCase().trim();
+      name = decoded.name || 'Google User';
+
+      if (!email) {
+        return res.status(400).json({ success: false, message: 'Email not found in Google credential payload' });
+      }
+    }
+
+    let user;
+
+    if (getIsConnected()) {
+      // Check if user exists in MongoDB
+      user = await User.findOne({ email });
+
+      if (!user) {
+        // If user doesn't exist, create them with blank password
+        user = await User.create({
+          name,
+          email,
+          password: '' // empty password for Google oauth users
+        });
+      }
+
+      return res.json({
+        success: true,
+        token: generateToken(user._id),
+        user: {
+          id: user._id,
+          name: user.name,
+          email: user.email
+        }
+      });
+    } else {
+      // In-Memory Fallback Mode
+      const existingUser = tempUsers.find((u) => u.email === email);
+
+      if (existingUser) {
+        return res.json({
+          success: true,
+          token: generateToken(existingUser._id),
+          user: {
+            id: existingUser._id,
+            name: existingUser.name,
+            email: existingUser.email
+          }
+        });
+      } else {
+        const mockId = `google-user-${Date.now()}`;
+        const newUser = {
+          _id: mockId,
+          name,
+          email,
+          password: ''
+        };
+        tempUsers.push(newUser);
+
+        return res.json({
+          success: true,
+          token: generateToken(mockId),
+          user: {
+            id: mockId,
+            name: newUser.name,
+            email: newUser.email
+          }
+        });
+      }
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 module.exports = router;

@@ -31,6 +31,9 @@ const initialPastRuns = [
 ];
 
 function App() {
+  const API_URL = import.meta.env.VITE_API_URL || '';
+  const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
+
   // --- STATE-BASED ROUTING ---
   const [view, setView] = useState(() => {
     // Check if session has active view or default to landing
@@ -148,7 +151,7 @@ function App() {
       }
 
       try {
-        const response = await fetch('/api/auth/me', {
+        const response = await fetch(`${API_URL}/api/auth/me`, {
           method: 'GET',
           headers: {
             'Authorization': `Bearer ${token}`
@@ -175,7 +178,143 @@ function App() {
     };
 
     checkUserSession();
-  }, []);
+  }, [API_URL]);
+
+  // Dynamic Google GIS SDK Initialization & Button Rendering
+  useEffect(() => {
+    if (!googleClientId) return;
+
+    const initGoogleSignIn = () => {
+      try {
+        window.google?.accounts.id.initialize({
+          client_id: googleClientId,
+          callback: handleGoogleCredentialResponse,
+        });
+
+        if (view === 'login') {
+          const btnContainer = document.getElementById('google-signin-btn');
+          if (btnContainer) {
+            window.google?.accounts.id.renderButton(btnContainer, {
+              theme: 'dark',
+              size: 'large',
+              width: btnContainer.offsetWidth || 340,
+            });
+          }
+        }
+      } catch (err) {
+        console.error('Google accounts initialize failed:', err);
+      }
+    };
+
+    // If script is already in DOM, just re-init/render
+    const existingScript = document.getElementById('google-jssdk');
+    if (existingScript) {
+      if (window.google) {
+        initGoogleSignIn();
+      }
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.id = 'google-jssdk';
+    script.async = true;
+    script.defer = true;
+    script.onload = initGoogleSignIn;
+    document.body.appendChild(script);
+
+    return () => {
+      // Clean up script on unmount
+      const scriptToRemove = document.getElementById('google-jssdk');
+      if (scriptToRemove) {
+        document.body.removeChild(scriptToRemove);
+      }
+    };
+  }, [googleClientId, view]);
+
+  // Handle Google Real authentication callback
+  const handleGoogleCredentialResponse = async (response) => {
+    setAuthLoading(true);
+    setAuthMessage({ type: '', text: '' });
+
+    try {
+      const res = await fetch(`${API_URL}/api/auth/google`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          token: response.credential,
+          isMock: false
+        })
+      });
+
+      const data = await res.json();
+      setAuthLoading(false);
+
+      if (res.ok && data.success) {
+        setCurrentUser(data.user);
+        localStorage.setItem('chitraksh_token', data.token);
+        localStorage.setItem('chitraksh_user', JSON.stringify(data.user));
+
+        setAuthMessage({ type: 'success', text: 'Google Sign-In successful!' });
+        setTimeout(() => {
+          setAuthMessage({ type: '', text: '' });
+          navigateTo('dashboard');
+        }, 1000);
+      } else {
+        setAuthMessage({ type: 'error', text: data.message || 'Google Auth failed' });
+      }
+    } catch (err) {
+      console.error(err);
+      setAuthLoading(false);
+      setAuthMessage({ type: 'error', text: 'Google Sign-In failed due to a network error.' });
+    }
+  };
+
+  // Google Login Manual Trigger (for Mock Sandbox fallback when Client ID is empty)
+  const triggerGoogleLogin = async () => {
+    setAuthLoading(true);
+    setAuthMessage({ type: 'info', text: 'Connecting to Sandbox using mock Google credentials...' });
+
+    setTimeout(async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/auth/google`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            token: 'mock-google-token-secret-12345',
+            isMock: true,
+            payload: {
+              email: 'sandbox.google.user@example.com',
+              name: 'Google Sandbox User'
+            }
+          })
+        });
+
+        const data = await res.json();
+        setAuthLoading(false);
+
+        if (res.ok && data.success) {
+          setCurrentUser(data.user);
+          localStorage.setItem('chitraksh_token', data.token);
+          localStorage.setItem('chitraksh_user', JSON.stringify(data.user));
+          setAuthMessage({ type: 'success', text: 'Successfully logged in with Mock Google account!' });
+          setTimeout(() => {
+            setAuthMessage({ type: '', text: '' });
+            navigateTo('dashboard');
+          }, 1000);
+        } else {
+          setAuthMessage({ type: 'error', text: data.message || 'Mock Google login failed' });
+        }
+      } catch (err) {
+        setAuthLoading(false);
+        setAuthMessage({ type: 'error', text: 'Connection to backend failed. Please verify if backend is running.' });
+      }
+    }, 1000);
+  };
 
   // Interactive Sandbox triggers
   const runSandboxPrompt = (promptText, highlightRange, matchedResults) => {
@@ -216,7 +355,7 @@ function App() {
     setAuthLoading(true);
 
     try {
-      const endpoint = authMode === 'login' ? '/api/auth/login' : '/api/auth/register';
+      const endpoint = `${API_URL}/api/auth/${authMode === 'login' ? 'login' : 'register'}`;
       const bodyData = authMode === 'login' 
         ? { email: authEmail, password: authPassword }
         : { name: authName, email: authEmail, password: authPassword };
@@ -264,6 +403,11 @@ function App() {
   };
 
   const triggerSocialAuth = (providerName) => {
+    if (providerName === 'google') {
+      triggerGoogleLogin();
+      return;
+    }
+
     setAuthLoading(true);
     setAuthMessage({ type: '', text: '' });
 
@@ -876,12 +1020,17 @@ const analyzeVideo = async () => {
                 </svg>
                 Continue with GitHub
               </button>
-              <button onClick={() => triggerSocialAuth('google')} className="social-auth-btn" id="btn-social-google">
-                <svg className="social-icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
-                  <path d="M12.24 10.285V13.4h6.887c-.275 1.565-1.88 4.604-6.887 4.604-4.33 0-7.859-3.578-7.859-8s3.529-8 7.859-8c2.46 0 4.105 1.025 5.047 1.926l2.427-2.334C17.955 2.192 15.34 1 12.24 1c-6.075 0-11 4.925-11 11s4.925 11 11 11c6.34 0 10.564-4.444 10.564-10.74 0-.721-.077-1.274-.172-1.975H12.24z"/>
-                </svg>
-                Continue with Google
-              </button>
+              
+              {googleClientId ? (
+                <div id="google-signin-btn" style={{ width: '100%', minHeight: '40px', display: 'flex', justifyContent: 'center' }}></div>
+              ) : (
+                <button onClick={() => triggerSocialAuth('google')} className="social-auth-btn" id="btn-social-google">
+                  <svg className="social-icon-svg" viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+                    <path d="M12.24 10.285V13.4h6.887c-.275 1.565-1.88 4.604-6.887 4.604-4.33 0-7.859-3.578-7.859-8s3.529-8 7.859-8c2.46 0 4.105 1.025 5.047 1.926l2.427-2.334C17.955 2.192 15.34 1 12.24 1c-6.075 0-11 4.925-11 11s4.925 11 11 11c6.34 0 10.564-4.444 10.564-10.74 0-.721-.077-1.274-.172-1.975H12.24z"/>
+                  </svg>
+                  Continue with Google (Sandbox)
+                </button>
+              )}
             </div>
 
             <div className="auth-divider">
