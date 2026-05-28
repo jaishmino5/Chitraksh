@@ -138,6 +138,45 @@ function App() {
     return () => clearInterval(cropInterval);
   }, [view, dashboardModule]);
 
+  // On startup, verify stored token and load user details
+  useEffect(() => {
+    const checkUserSession = async () => {
+      const token = localStorage.getItem('chitraksh_token');
+      if (!token) {
+        setCurrentUser(null);
+        return;
+      }
+
+      try {
+        const response = await fetch('/api/auth/me', {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+
+        const data = await response.json();
+        if (response.ok && data.success) {
+          setCurrentUser(data.user);
+          localStorage.setItem('chitraksh_user', JSON.stringify(data.user));
+        } else {
+          // Token expired or invalid
+          localStorage.removeItem('chitraksh_token');
+          localStorage.removeItem('chitraksh_user');
+          setCurrentUser(null);
+        }
+      } catch (err) {
+        console.error('Session verify failed:', err);
+        const cachedUser = localStorage.getItem('chitraksh_user');
+        if (cachedUser) {
+          setCurrentUser(JSON.parse(cachedUser));
+        }
+      }
+    };
+
+    checkUserSession();
+  }, []);
+
   // Interactive Sandbox triggers
   const runSandboxPrompt = (promptText, highlightRange, matchedResults) => {
     setSandboxPrompt(promptText);
@@ -154,13 +193,18 @@ function App() {
     }, 1200);
   };
 
-  // Auth form submissions
-  const handleAuthSubmit = (e) => {
+  // Auth form submissions (Register & Login)
+  const handleAuthSubmit = async (e) => {
     e.preventDefault();
     setAuthMessage({ type: '', text: '' });
 
     if (!authEmail || !authPassword) {
       setAuthMessage({ type: 'error', text: 'Please enter all credentials.' });
+      return;
+    }
+
+    if (authMode === 'signup' && !authName) {
+      setAuthMessage({ type: 'error', text: 'Please enter your name.' });
       return;
     }
 
@@ -171,34 +215,64 @@ function App() {
 
     setAuthLoading(true);
 
-    setTimeout(() => {
+    try {
+      const endpoint = authMode === 'login' ? '/api/auth/login' : '/api/auth/register';
+      const bodyData = authMode === 'login' 
+        ? { email: authEmail, password: authPassword }
+        : { name: authName, email: authEmail, password: authPassword };
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(bodyData)
+      });
+
+      const data = await response.json();
       setAuthLoading(false);
-      const nameVal = authMode === 'signup' && authName ? authName : authEmail.split('@')[0].toUpperCase();
-      const user = { email: authEmail, name: nameVal };
-      
-      setCurrentUser(user);
-      localStorage.setItem('chitraksh_user', JSON.stringify(user));
-      setAuthMessage({ type: 'success', text: authMode === 'login' ? 'Welcome back!' : 'Account registered!' });
-      
-      setTimeout(() => {
-        setAuthMessage({ type: '', text: '' });
-        setAuthEmail('');
-        setAuthPassword('');
-        setAuthName('');
-        setAuthConfirmPassword('');
-        navigateTo('dashboard');
-      }, 1000);
-    }, 1500);
+
+      if (response.ok && data.success) {
+        setCurrentUser(data.user);
+        localStorage.setItem('chitraksh_token', data.token);
+        localStorage.setItem('chitraksh_user', JSON.stringify(data.user));
+        
+        setAuthMessage({ 
+          type: 'success', 
+          text: authMode === 'login' ? 'Access granted! Welcome back.' : 'Account created successfully!' 
+        });
+
+        setTimeout(() => {
+          setAuthMessage({ type: '', text: '' });
+          setAuthEmail('');
+          setAuthPassword('');
+          setAuthName('');
+          setAuthConfirmPassword('');
+          navigateTo('dashboard');
+        }, 1000);
+      } else {
+        setAuthMessage({ type: 'error', text: data.message || 'Authentication failed' });
+      }
+    } catch (err) {
+      console.error(err);
+      setAuthLoading(false);
+      setAuthMessage({ 
+        type: 'error', 
+        text: 'Network error. Please make sure the backend database server is started.' 
+      });
+    }
   };
 
   const triggerSocialAuth = (providerName) => {
     setAuthLoading(true);
     setAuthMessage({ type: '', text: '' });
 
+    // Mock social auth redirect response (Simulated)
     setTimeout(() => {
       setAuthLoading(false);
       const dummyUser = { email: `user@${providerName}.com`, name: `${providerName.toUpperCase()} USER` };
       setCurrentUser(dummyUser);
+      localStorage.setItem('chitraksh_token', 'mock_social_auth_token_secret_123');
       localStorage.setItem('chitraksh_user', JSON.stringify(dummyUser));
       navigateTo('dashboard');
     }, 1000);
@@ -206,6 +280,7 @@ function App() {
 
   const handleLogout = () => {
     setCurrentUser(null);
+    localStorage.removeItem('chitraksh_token');
     localStorage.removeItem('chitraksh_user');
     navigateTo('landing');
   };
